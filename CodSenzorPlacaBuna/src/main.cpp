@@ -66,7 +66,7 @@ void loop()
 
   // Display the temperature and humidity on the OLED
   display.clearDisplay();
-  display.setTextSize(2);
+  display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
 
   display.setCursor(0, 0);
