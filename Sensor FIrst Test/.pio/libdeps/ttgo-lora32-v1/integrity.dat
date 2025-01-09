@@ -1,0 +1,3 @@
+adafruit/DHT sensor library @ ^1.4.2
+adafruit/Adafruit Unified Sensor @ ^1.1.9
+Bodmer/TFT_eSPI @ ^2.3.70
