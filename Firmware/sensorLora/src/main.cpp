@@ -5,33 +5,35 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <DHT.h>  // DHT sensor library
- 
-// OLED display settings
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+
 
 // DHT Sensor settings (AM2301A / DHT22)
 #define DHTPIN 2         // GPIO2 or GPIO15
 #define DHTTYPE DHT22    // AM2301A is DHT22
 DHT dht(DHTPIN, DHTTYPE);
 
-// LoRaWAN AppEUI, DevEUI, and AppKey (replace with real values)
+// Motor control pins
+#define MOTOR_ENABLE 14  // Enable pin for PWM
+#define MOTOR_IN1 27     // Control pin 1
+#define MOTOR_IN2 26     // Control pin 2
+
+// PWM settings
+#define PWM_CHANNEL 0
+#define PWM_FREQUENCY 5000
+#define PWM_RESOLUTION 8  // 8-bit resolution (0-255)
+
+
+// LoRaWAN AppEUI, DevEUI, and AppKey
 static const u1_t PROGMEM APPEUI[8] = {0x34, 0x12, 0x00, 0xD0, 0x7E, 0xD5, 0xB3, 0x70};
 static const u1_t PROGMEM DEVEUI[8] = {0xD2, 0xC6, 0x06, 0xD0, 0x7E, 0xD5, 0xB3, 0x70};
 static const u1_t PROGMEM APPKEY[16] = {0xCA, 0x42, 0x45, 0xF7, 0x17, 0xD4, 0x98, 0xD5, 0x79, 0x00, 0xD9, 0x4A, 0x22, 0xCF, 0x2B, 0x4C};
-void os_getDevKey(u1_t *buf) {
-  memcpy_P(buf, APPKEY, 16);  // Copy APPKEY to the provided buffer
-}
 
-void os_getArtEui(u1_t *buf) {
-  memcpy_P(buf, APPEUI, 8);  // Copy APPEUI to the provided buffer
-}
 
-void os_getDevEui(u1_t *buf) {
-  memcpy_P(buf, DEVEUI, 8);  // Copy DEVEUI to the provided buffer
-}
+void os_getDevKey(u1_t *buf) { memcpy_P(buf, APPKEY, 16); }
+void os_getArtEui(u1_t *buf) { memcpy_P(buf, APPEUI, 8); }
+void os_getDevEui(u1_t *buf) { memcpy_P(buf, DEVEUI, 8); }
+
 
 // Pin mapping for LMIC
 const lmic_pinmap lmic_pins = {
@@ -41,129 +43,208 @@ const lmic_pinmap lmic_pins = {
     .dio = {26, 33, 32},
 };
 
-osjob_t sendjob;  // Job for sending data
+
+osjob_t sendjob;
 const unsigned TX_INTERVAL = 60;  // Interval for sending data (in seconds)
 
-// Function to display sensor data on OLED
-void displaySensorData(float temperature, float humidity) {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
 
-  display.print(F("Temp: "));
-  display.print(temperature);
-  display.println(F(" C"));
+// Global motor state
+bool motorRanForward = false;  // Tracks if the motor has already run forward
 
-  display.print(F("Humidity: "));
-  display.print(humidity);
-  display.println(F(" %"));
 
-  display.display();
+// Forward declarations
+float readTemperature();
+float readHumidity();
+void stopMotor();
+void runMotorForward();
+void runMotorReverse();
+
+
+// Function to initialize motor control
+void setupMotor() {
+
+  pinMode(MOTOR_ENABLE, OUTPUT);
+  pinMode(MOTOR_IN1, OUTPUT);
+  pinMode(MOTOR_IN2, OUTPUT);
+
+  // Setup PWM for the motor
+  ledcSetup(PWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcAttachPin(MOTOR_ENABLE, PWM_CHANNEL);
+
+  // Ensure motor starts off
+  digitalWrite(MOTOR_IN1, LOW);
+  digitalWrite(MOTOR_IN2, LOW);
+  ledcWrite(PWM_CHANNEL, 0);
+
 }
 
-// Function to read data from DHT sensor
+
+// Function to stop the motor
+void stopMotor() {
+
+  Serial.println("Motor stopped.");
+
+  digitalWrite(MOTOR_IN1, LOW);
+
+  digitalWrite(MOTOR_IN2, LOW);
+
+  ledcWrite(PWM_CHANNEL, 0);  // Stop PWM
+
+}
+
+
+// Function to run the motor forward
+void runMotorForward() {
+
+  Serial.println("Motor running forward for 5 seconds...");
+
+  digitalWrite(MOTOR_IN1, HIGH);
+
+  digitalWrite(MOTOR_IN2, LOW);
+
+  ledcWrite(PWM_CHANNEL, 255);  // Full speed
+
+  delay(5000);  // Run for 5 seconds
+
+  stopMotor();
+
+}
+
+
+// Function to run the motor backward
+void runMotorReverse() {
+
+  Serial.println("Motor running reverse for 5 seconds...");
+
+  digitalWrite(MOTOR_IN1, LOW);
+
+  digitalWrite(MOTOR_IN2, HIGH);
+
+  ledcWrite(PWM_CHANNEL, 255);  // Full speed
+
+  delay(5000);  // Run for 5 seconds
+
+  stopMotor();
+
+}
+
+
+// Function to read temperature from the DHT sensor
 float readTemperature() {
-  float temp = dht.readTemperature();  // Read temperature in Celsius
+
+  float temp = dht.readTemperature();
+
   if (isnan(temp)) {
-    Serial.println(F("Failed to read from DHT sensor"));
+    Serial.println("Failed to read temperature from sensor.");
     return -1;
   }
+
   return temp;
 }
 
+
+// Function to read humidity from the DHT sensor
 float readHumidity() {
-  float hum = dht.readHumidity();  // Read humidity
+
+  float hum = dht.readHumidity();
+
   if (isnan(hum)) {
-    Serial.println(F("Failed to read from DHT sensor"));
+    Serial.println("Failed to read humidity from sensor.");
     return -1;
   }
+
   return hum;
 }
 
+
+// Function to control the motor based on humidity
+void controlMotor(float humidity) {
+
+  if (humidity > 90.0 && !motorRanForward) {
+
+    runMotorForward();
+    motorRanForward = true;  // Mark motor as having run forward
+
+  } else if (humidity < 90.0 && motorRanForward) {
+
+    runMotorReverse();
+    motorRanForward = false;  // Reset forward state
+
+  }
+}
+
+
 // Function to send data via LoRaWAN
 void do_send(osjob_t *j) {
-  // Read temperature and humidity
+
   float temperature = readTemperature();
   float humidity = readHumidity();
 
   if (temperature != -1 && humidity != -1) {
-    // Prepare payload
+
+    // Print data to the Serial Monitor
+    Serial.print("Temperature: ");
+    Serial.print(temperature);
+    Serial.println(" C");
+    Serial.print("Humidity: ");
+    Serial.print(humidity);
+    Serial.println(" %");
+
+    // Control the motor based on humidity
+    controlMotor(humidity);
+
+    // Prepare payload for LoRaWAN
     uint8_t payload[4];
-    int tempInt = (int)(temperature * 100);  // Convert to integer (centi-degrees)
-    uint16_t humInt = (uint16_t)(humidity * 100);  // Convert to integer (humidity in percentage)
+    int tempInt = (int)(temperature * 100);
+    uint16_t humInt = (uint16_t)(humidity * 100);
 
-    payload[0] = (tempInt >> 8) & 0xFF;  // High byte of temperature
-    payload[1] = tempInt & 0xFF;         // Low byte of temperature
-    payload[2] = (humInt >> 8) & 0xFF;   // High byte of humidity
-    payload[3] = humInt & 0xFF;          // Low byte of humidity
+    payload[0] = (tempInt >> 8) & 0xFF;
+    payload[1] = tempInt & 0xFF;
+    payload[2] = (humInt >> 8) & 0xFF;
+    payload[3] = humInt & 0xFF;
 
-    // Display data on OLED screen
-    displaySensorData(temperature, humidity);
-
-    // Send payload via LoRaWAN
     LMIC_setTxData2(1, payload, sizeof(payload), 0);
-    Serial.println(F("Packet queued"));
-  }
+    Serial.println("Packet queued.");
 
-  // Schedule next transmission after TX_COMPLETE
+  } else {
+    Serial.println("Failed to read from DHT sensor.");
+  }
   os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(TX_INTERVAL), do_send);
 }
 
+
 void onEvent(ev_t ev) {
-  // Event handling code
-  switch (ev) {
-    case EV_TXCOMPLETE:
-      Serial.println(F("EV_TXCOMPLETE"));
-      if (LMIC.txrxFlags & TXRX_ACK) {
-        Serial.println(F("Received ack"));
-      }
-      if (LMIC.dataLen) {
-        Serial.print(F("Received "));
-        Serial.print(LMIC.dataLen);
-        Serial.println(F(" bytes of payload"));
-      }
-      // Schedule next transmission
-      os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(TX_INTERVAL), do_send);
-      break;
-    default:
-      break;
-  }
-}
 
-// Initialize display and begin serial communication
-void runDisplay() {
-  Serial.begin(115200);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("SSD1306 allocation failed"));
-    for (;;);  // Loop forever
+  if (ev == EV_TXCOMPLETE) {
+
+    Serial.println("LoRaWAN transmission complete.");
+    os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(TX_INTERVAL), do_send);
+
   }
 
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(5, 5);
-  display.println(F("Initializing..."));
-  display.display();
 }
 
+
+// Function to initialize the DHT sensor and motor
 void setup() {
-  runDisplay();
-  dht.begin();  // Initialize the DHT sensor
 
-  Serial.begin(9600);
-  Serial.println(F("Starting"));
+  Serial.begin(115200);
+  dht.begin();
+
+  setupMotor();
+
+  Serial.println("Starting...");
 
   SPI.begin(5, 19, 27, lmic_pins.nss);
-
-  // LMIC init
   os_init_ex((const void *)&lmic_pins);
   LMIC_reset();
 
-  // Start sending data (OTAA join + data transmission)
   do_send(&sendjob);
 }
 
+
 void loop() {
+
   os_runloop_once();
+  
 }
