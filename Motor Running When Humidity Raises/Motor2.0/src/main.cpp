@@ -21,7 +21,7 @@ bool motorRunning = false;
 #define ENABLE_A 17   // Connected to ENABLE A pin on the driver
 #define IN1 16        // Connected to IN1 on the driver
 #define IN2 4         // Connected to IN2 on the driver
-int motorSpeed = 100; // Initial motor speed (0-255)
+int motorSpeed = 255; // Initial motor speed (0-255)
 
 // Variables
 unsigned long lastActionTime = 0;
